@@ -1,0 +1,37 @@
+#!/bin/bash
+
+# Configuration
+POKEMON_LIST=("bulbasaur" "ivysaur" "venusaur" "charmander" "charmeleon")
+API_BASE="https://pokeapi.co/api/v2/pokemon"
+OUTPUT_DIR="pokemon_data"
+DELAY_SECONDS=2  # Recommended delay to avoid rate limiting
+
+# Create output directory
+mkdir -p "$OUTPUT_DIR"
+
+# Process each Pokémon
+for pokemon in "${POKEMON_LIST[@]}"; do
+  echo "Fetching data for $pokemon..."
+  
+  # Make API request
+  curl -s -X GET "$API_BASE/$pokemon" \
+    -H "Accept: application/json" \
+    --output "$OUTPUT_DIR/$pokemon.json" \
+    --fail >/dev/null 2>&1
+  
+  # Check for success
+  if [ $? -eq 0 ]; then
+    echo "Saved data to $OUTPUT_DIR/$pokemon.json"
+  else
+    echo "Failed to fetch $pokemon data"
+    rm -f "$OUTPUT_DIR/$pokemon.json" 2>/dev/null
+  fi
+  
+  # Rate limiting delay (except after last request)
+  if [ "$pokemon" != "${POKEMON_LIST[-1]}" ]; then
+    sleep "$DELAY_SECONDS"
+  fi
+done
+
+echo "Batch processing complete!"
+
