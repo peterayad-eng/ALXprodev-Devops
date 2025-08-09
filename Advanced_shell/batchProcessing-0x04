@@ -1,0 +1,67 @@
+#!/bin/bash
+
+# Configuration
+POKEMON_LIST=("bulbasaur" "ivysaur" "venusaur" "charmander" "charmeleon")
+API_BASE="https://pokeapi.co/api/v2/pokemon"
+OUTPUT_DIR="pokemon_data"
+MAX_CONCURRENT=3  # Limit parallel requests
+ERROR_LOG="parallel_errors.log"
+
+# Initialize
+mkdir -p "$OUTPUT_DIR"
+rm -f "$ERROR_LOG"
+declare -A pids  # Track process IDs
+
+# Function to fetch single Pokémon
+fetch_pokemon() {
+    local pokemon=$1
+    local attempt=0
+    local max_attempts=2
+
+    while [ $attempt -lt $max_attempts ]; do
+        if curl -s -X GET "$API_BASE/$pokemon" \
+            -H "Accept: application/json" \
+            --max-time 10 \
+            --output "$OUTPUT_DIR/$pokemon.json" \
+            --fail >/dev/null 2>&1 && \
+            jq -e . "$OUTPUT_DIR/$pokemon.json" >/dev/null 2>&1; then
+            echo "$pokemon"
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+
+    echo "$pokemon" >> "$ERROR_LOG"
+    rm -f "$OUTPUT_DIR/$pokemon.json"
+    return 1
+}
+
+# Main execution
+echo "Starting parallel fetch (max $MAX_CONCURRENT concurrent requests)..."
+for pokemon in "${POKEMON_LIST[@]}"; do
+    while [ $(jobs -r | wc -l) -ge $MAX_CONCURRENT ]; do
+        sleep 0.5  # Throttle if max concurrent reached
+    done
+
+    fetch_pokemon "$pokemon" &
+    pids[$!]=$pokemon  # Store PID with Pokémon name
+done
+
+# Wait for all processes and report results
+completed=0
+failed=0
+for pid in "${!pids[@]}"; do
+    wait "$pid"
+    if [ $? -eq 0 ]; then
+        completed=$((completed + 1))
+    else
+        failed=$((failed + 1))
+    fi
+done
+
+echo -e "\nResults:"
+echo "Successfully fetched: $completed"
+echo "Failed: $failed"
+[ -s "$ERROR_LOG" ] && echo "Check $ERROR_LOG for details"
+
