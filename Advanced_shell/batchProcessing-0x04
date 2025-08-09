@@ -4,60 +4,73 @@
 POKEMON_LIST=("bulbasaur" "ivysaur" "venusaur" "charmander" "charmeleon")
 API_BASE="https://pokeapi.co/api/v2/pokemon"
 OUTPUT_DIR="pokemon_data"
-MAX_CONCURRENT=3  # Limit parallel requests
+MAX_CONCURRENT=3
 ERROR_LOG="parallel_errors.log"
+TIMEOUT_SECONDS=15
 
 # Initialize
 mkdir -p "$OUTPUT_DIR"
 rm -f "$ERROR_LOG"
-declare -A pids  # Track process IDs
+declare -A pids
+trap 'kill_all_processes' EXIT TERM INT
+
+# Function to clean up processes
+kill_all_processes() {
+    echo -e "\nTerminating all background processes..."
+    for pid in "${!pids[@]}"; do
+        kill "$pid" 2>/dev/null && echo "Killed PID $pid (${pids[$pid]})"
+    done
+    exit 1
+}
 
 # Function to fetch single Pokémon
 fetch_pokemon() {
     local pokemon=$1
-    local attempt=0
-    local max_attempts=2
+    local temp_file=$(mktemp)
+    local status=1
 
-    while [ $attempt -lt $max_attempts ]; do
-        if curl -s -X GET "$API_BASE/$pokemon" \
-            -H "Accept: application/json" \
-            --max-time 10 \
-            --output "$OUTPUT_DIR/$pokemon.json" \
-            --fail >/dev/null 2>&1 && \
-            jq -e . "$OUTPUT_DIR/$pokemon.json" >/dev/null 2>&1; then
-            echo "$pokemon"
-            return 0
-        fi
-        attempt=$((attempt + 1))
-        sleep 1
-    done
+    if curl -s -X GET "$API_BASE/$pokemon" \
+        -H "Accept: application/json" \
+        --max-time "$TIMEOUT_SECONDS" \
+        --output "$temp_file" \
+        --fail >/dev/null 2>&1 && \
+        jq -e . "$temp_file" >/dev/null 2>&1; then
+        mv "$temp_file" "$OUTPUT_DIR/$pokemon.json"
+        echo "$pokemon"
+        status=0
+    else
+        echo "$pokemon" >> "$ERROR_LOG"
+        rm -f "$temp_file"
+    fi
 
-    echo "$pokemon" >> "$ERROR_LOG"
-    rm -f "$OUTPUT_DIR/$pokemon.json"
-    return 1
+    return $status
 }
 
 # Main execution
 echo "Starting parallel fetch (max $MAX_CONCURRENT concurrent requests)..."
 for pokemon in "${POKEMON_LIST[@]}"; do
-    while [ $(jobs -r | wc -l) -ge $MAX_CONCURRENT ]; do
-        sleep 0.5  # Throttle if max concurrent reached
+    # Check and limit concurrent processes
+    while [ $(jobs -rp | wc -l) -ge $MAX_CONCURRENT ]; do
+        sleep 0.5
     done
 
     fetch_pokemon "$pokemon" &
-    pids[$!]=$pokemon  # Store PID with Pokémon name
+    pids[$!]=$pokemon
+    echo "Started PID $! for $pokemon"
 done
 
-# Wait for all processes and report results
+# Wait for completion and track results
 completed=0
 failed=0
 for pid in "${!pids[@]}"; do
-    wait "$pid"
-    if [ $? -eq 0 ]; then
+    if wait "$pid"; then
         completed=$((completed + 1))
     else
         failed=$((failed + 1))
+        # Ensure process is terminated
+        kill "$pid" 2>/dev/null
     fi
+    unset "pids[$pid]"
 done
 
 echo -e "\nResults:"
@@ -65,3 +78,4 @@ echo "Successfully fetched: $completed"
 echo "Failed: $failed"
 [ -s "$ERROR_LOG" ] && echo "Check $ERROR_LOG for details"
 
+exit 0
