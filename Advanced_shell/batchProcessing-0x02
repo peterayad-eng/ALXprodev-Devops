@@ -5,33 +5,66 @@ POKEMON_LIST=("bulbasaur" "ivysaur" "venusaur" "charmander" "charmeleon")
 API_BASE="https://pokeapi.co/api/v2/pokemon"
 OUTPUT_DIR="pokemon_data"
 DELAY_SECONDS=2  # Recommended delay to avoid rate limiting
+MAX_RETRIES=3
+ERROR_LOG="api_errors.log"
 
 # Create output directory
 mkdir -p "$OUTPUT_DIR"
+touch "$ERROR_LOG"
 
-# Process each Pokémon
+# Function to make API request with retries
+fetch_pokemon_data() {
+    local pokemon=$1
+    local attempt=0
+    local success=0
+
+    while [ $attempt -lt $MAX_RETRIES ]; do
+        attempt=$((attempt + 1))
+        
+        echo "Attempt $attempt for $pokemon..."
+        
+        # Make API request with timeout
+        if curl -s -X GET "$API_BASE/$pokemon" \
+            -H "Accept: application/json" \
+            --max-time 10 \
+            --output "$OUTPUT_DIR/$pokemon.json" \
+            --fail >/dev/null 2>&1; then
+            
+            # Validate JSON response
+            if jq -e . "$OUTPUT_DIR/$pokemon.json" >/dev/null 2>&1; then
+                echo "Saved data to $OUTPUT_DIR/$pokemon.json"
+                success=1
+                break
+            else
+                echo "Invalid JSON response for $pokemon" >> "$ERROR_LOG"
+                rm -f "$OUTPUT_DIR/$pokemon.json"
+            fi
+        fi
+
+        # Only delay if not the last attempt
+        if [ $attempt -lt $MAX_RETRIES ]; then
+            sleep "$DELAY_SECONDS"
+        fi
+    done
+
+    if [ $success -eq 0 ]; then
+        echo "Failed to fetch $pokemon after $MAX_RETRIES attempts" >> "$ERROR_LOG"
+        return 1
+    fi
+    return 0
+}
+
+# Main processing loop
 for pokemon in "${POKEMON_LIST[@]}"; do
-  echo "Fetching data for $pokemon..."
-  
-  # Make API request
-  curl -s -X GET "$API_BASE/$pokemon" \
-    -H "Accept: application/json" \
-    --output "$OUTPUT_DIR/$pokemon.json" \
-    --fail >/dev/null 2>&1
-  
-  # Check for success
-  if [ $? -eq 0 ]; then
-    echo "Saved data to $OUTPUT_DIR/$pokemon.json"
-  else
-    echo "Failed to fetch $pokemon data"
-    rm -f "$OUTPUT_DIR/$pokemon.json" 2>/dev/null
-  fi
-  
-  # Rate limiting delay (except after last request)
-  if [ "$pokemon" != "${POKEMON_LIST[-1]}" ]; then
-    sleep "$DELAY_SECONDS"
-  fi
+    echo "Processing $pokemon..."
+    fetch_pokemon_data "$pokemon"
+    
+    # Delay between different Pokémon requests
+    if [ "$pokemon" != "${POKEMON_LIST[-1]}" ]; then
+        sleep "$DELAY_SECONDS"
+    fi
 done
 
 echo "Batch processing complete!"
+echo "Error log available at: $ERROR_LOG"
 
